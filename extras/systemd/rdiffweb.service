@@ -1,0 +1,9 @@
+[Unit]
+Description=Rdiffweb Server
+Documentation=https://rdiffweb.org/
+
+[Service]
+ExecStart=/usr/local/bin/rdiffweb
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,47 @@
+*.py[co]
+*.log
+
+# Packages
+*.egg
+*.egg-info
+dist
+build
+eggs
+parts
+bin
+var
+sdist
+develop-eggs
+.installed.cfg
+setup.py.bak
+.eggs
+
+# Installer logs
+pip-log.txt
+
+# Unit test / coverage reports
+.coverage
+.tox
+coverage*.xml
+xunit*.xml
+
+#Mr Developer
+.mr.developer.cfg
+/node_modules/
+.project
+.externalToolBuilders
+.settings
+/ez_setup
+/rdwtest.conf
+/rdwtest.db
+/runtest.py
+.pydevproject
+/rdw.db
+/testrdw.conf
+.tox
+.pydevproject
+/htmlcov/
+/.env/
+/.pybuild/
+/.pytest_cache/
+/.coverage*

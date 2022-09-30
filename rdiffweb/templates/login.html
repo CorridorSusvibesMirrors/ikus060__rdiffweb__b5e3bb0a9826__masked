@@ -1,0 +1,50 @@
+{% extends 'layout.html' %}
+{% set username = None %}
+{% block title %}
+  {% trans %}Sign in{% endtrans %}
+{% endblock %}
+{% block body %}
+  <div class="container mb-auto">
+    <div class="row">
+      <div class="offset-sm-3 col-sm-6 text-center">
+        <h1>
+          {% if header_name != 'Rdiffweb' %}
+            {{ header_name }}
+          {% else %}
+            <img alt="{{ header_name }}"
+                 class="mt-4 mb-4"
+                 height="192"
+                 src="{{ header_logo or url_for('static','logo1.svg') }}"/>
+          {% endif %}
+        </h1>
+        <p class="text-secondary">
+          {% if welcome_msg %}
+            {% autoescape false %}
+              {{ welcome_msg }}
+            {% endautoescape %}
+          {% else %}
+            {% trans %}A simplified backup management software for quick access to your archives through an
+            efficient web interface.{% endtrans %}
+            <br />
+            <br />
+            <a href="https://rdiffweb.org/">{% trans %}website{% endtrans %}</a> •
+            <a href="https://groups.google.com/d/forum/rdiffweb">{% trans %}community{% endtrans %}</a>
+          {% endif %}
+        </p>
+      </div>
+    </div>
+  </div>
+  {% block content %}
+    <div class="container mb-auto">
+      <div class="row">
+        <div class="offset-sm-4 col-sm-4">
+          <form id="form-login" role="form" method="post" action="{{ url_for() }}">
+            <h2>{% trans %}Welcome back{% endtrans %}</h2>
+            {% include 'message.html' %}
+            {{ form }}
+          </form>
+        </div>
+      </div>
+    </div>
+  {% endblock content %}
+{% endblock body %}

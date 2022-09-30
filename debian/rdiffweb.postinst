@@ -1,0 +1,31 @@
+#!/bin/sh
+
+set -e
+
+case "${1}" in
+	configure)
+		# Encforce permissions on /etc/rdiffweb
+		mkdir -p --mode 750 /etc/rdiffweb
+		# Create default session directory
+		mkdir -p /var/lib/rdiffweb/session
+		# Create symbolic link to Chart.js
+		if [ -f /usr/share/javascript/chart.js/Chart.bundle.min.js ]; then
+			ln -sf /usr/share/javascript/chart.js/Chart.bundle.min.js /usr/lib/python3/dist-packages/rdiffweb/static/js/chart.min.js
+		else
+			ln -sf /usr/share/javascript/chart.js/Chart.min.js /usr/lib/python3/dist-packages/rdiffweb/static/js/chart.min.js
+		fi
+		;;
+
+	abort-upgrade|abort-remove|abort-deconfigure)
+
+		;;
+
+	*)
+		echo "postinst called with unknown argument \`${1}'" >&2
+		exit 1
+		;;
+esac
+
+#DEBHELPER#
+
+exit 0

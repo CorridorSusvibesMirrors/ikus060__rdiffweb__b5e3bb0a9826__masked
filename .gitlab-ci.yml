@@ -1,0 +1,351 @@
+image: python:3-bullseye
+
+stages:
+- test
+- package
+- doc
+- test-package
+- sonar
+- publish
+- deploy
+
+#
+# Test Stage
+#
+.tox:  &tox
+  image: python:3-bullseye
+  stage: test
+  variables:
+    TOXENV: $CI_JOB_NAME
+  before_script:
+  - apt -yq update && apt install -yq rdiff-backup
+  - pip install tox
+  script:
+  - export TOXENV=${TOXENV:-$CI_JOB_NAME}
+  - echo TOXENV=$TOXENV
+  - useradd myuser
+  - su myuser -c tox
+  artifacts:
+    paths:
+    - coverage-*.xml
+    - xunit-*.xml
+    expire_in: 1 day
+
+flake8:
+  <<: *tox
+
+black:
+  <<: *tox
+
+isort:
+  <<: *tox
+
+djlint:
+  <<: *tox
+
+py3:
+  <<: *tox
+  image: $IMAGE
+  parallel:
+    matrix:
+    - TOXENV: py3
+      IMAGE: [python:3.6, python:3.7, python:3.8, python:3.9, python:3.10]
+
+rdiff-backup-beta:
+  <<: *tox
+  image: python:3.9-bullseye
+  variables:
+    TOXENV: buster
+  allow_failure: true
+  before_script:
+  - apt-get update
+  - apt -y install librsync-dev
+  - pip install tox
+  - pip install -U --pre rdiff-backup
+
+debian:
+  <<: *tox
+  image: $IMAGE
+  parallel:
+    matrix:
+    - TOXENV: buster
+      IMAGE: python:3.7-buster
+    - TOXENV: bullseye
+      IMAGE: python:3.9-bullseye
+    - TOXENV: bookworm
+      IMAGE: python:3.10
+
+postgresql-12:
+  <<: *tox
+  image: $IMAGE
+  services:
+    - postgres:12.2-alpine
+  parallel:
+    matrix:
+    - TOXENV: buster
+      IMAGE: python:3.7-buster
+    - TOXENV: bullseye
+      IMAGE: python:3.9-bullseye
+    - TOXENV: bookworm
+      IMAGE: python:3.10
+  variables:
+    RDIFFWEB_TEST_DATABASE_URI: "postgresql://admin@postgres/test"
+    POSTGRES_DB: test
+    POSTGRES_USER: admin
+    POSTGRES_PASSWORD: ""
+    POSTGRES_HOST_AUTH_METHOD: trust
+
+doc:
+  <<: *tox
+  stage: doc
+  needs: []
+  dependencies: []
+  artifacts:
+    paths:
+    - .tox/doc/tmp/html
+    expire_in: 1 day
+
+package:py3: 
+  stage: package
+  needs: []
+  script:
+  - pip3 install wheel
+  - python3 setup.py sdist bdist_wheel
+  dependencies: []
+  artifacts:
+    paths:
+    - dist/*.whl
+    expire_in: 1 day
+    
+package:docker:
+  stage: package
+  needs: []
+  dependencies: []
+  image: docker:20
+  services:
+  - name: docker:20-dind
+  script:
+  # Get docker layes
+  - docker pull ikus060/rdiffweb:latest || true
+  - docker pull ikus060/rdiffweb:$CI_COMMIT_REF_SLUG || true
+  - docker build --cache-from ikus060/rdiffweb:latest --cache-from ikus060/rdiffweb:$CI_COMMIT_REF_SLUG -t rdiffweb .
+  - mkdir dist
+  - docker save rdiffweb --output dist/rdiffweb-docker.tar
+  artifacts:
+    paths:
+    - dist/*-docker.tar
+    expire_in: 1 day
+
+package:deb: 
+  stage: package
+  needs: []
+  image: buildpack-deps:$DIST
+  parallel:
+    matrix:
+    # Disable unitest on buster. Cherrypy packages doesn't include tests
+    - DIST: buster
+      DEB_BUILD_OPTIONS: nocheck
+      BACKPORTS: deb http://deb.debian.org/debian buster-backports main
+    - DIST: [bullseye, bookworm]
+    - DIST: [jammy]
+      TZ: UTC
+  script: |
+    set -x
+    set -e
+    if [ ! -z "$BACKPORTS" ]; then
+      echo "$BACKPORTS" > /etc/apt/sources.list.d/backports.list
+    fi
+    apt update
+    apt -y --no-install-recommends install devscripts
+    export VERSION=$(curl -L https://gitlab.com/ikus-soft/maven-scm-version/-/raw/master/version.sh 2>/dev/null | bash -s DEB)
+    if [ ! -z "$BACKPORTS" ]; then
+      apt build-dep -t $DIST-backports -y .
+    else
+      apt build-dep -y .
+    fi
+    dch -v "$VERSION" "automated build"
+    dpkg-buildpackage -b
+    mkdir -p ./dist/$DIST
+    mv ../rdiffweb*.deb ./dist/$DIST/
+  artifacts:
+    paths:
+    - ./dist/*
+    expire_in: 1 day
+
+test-package:deb:
+  stage: test-package
+  image: buildpack-deps:$DIST
+  needs: ["package:deb"]
+  parallel:
+    matrix:
+    - DIST: [buster, bullseye, bookworm]
+    # Ubuntu tzdata is broken https://githubmate.com/repo/regebro/tzlocal/issues/101
+    # So we need to make it explicit using environment variable
+    - DIST: [jammy]
+      TZ: UTC
+  script:
+  - apt update && apt install -y ./dist/$DIST/rdiffweb*.deb
+  - rdiffweb --version
+  - (/usr/bin/rdiffweb &)
+  - apt install -y curl
+  - curl http://localhost:8080
+  
+publish:sonar:master:
+  stage: sonar
+  allow_failure: True
+  needs:
+  - py3
+  image: sonarsource/sonar-scanner-cli
+  only:
+  - master
+  variables:
+    SONAR_PROJECT_BASE_DIR: "${CI_PROJECT_DIR}"
+  script:
+  - sonar-scanner -X -Dsonar.python.coverage.reportPaths=coverage-*.xml -Dsonar.python.xunit.reportPaths=xunit-py3.xml -Dsonar.host.url=$SONAR_URL -Dsonar.login=$SONAR_TOKEN -Dsonar.projectKey=$CI_PROJECT_NAME -Dsonar.projectVersion=$(git describe) -Dsonar.qualitygate.wait=True
+
+publish:sonar:dev:
+  stage: sonar
+  allow_failure: True
+  needs:
+  - py3
+  image: sonarsource/sonar-scanner-cli
+  only:
+    variables:
+      - $SONAR_URL
+      - $SONAR_TOKEN
+  variables:
+    SONAR_PROJECT_BASE_DIR: "${CI_PROJECT_DIR}"
+  script:
+  - sonar-scanner -X -Dsonar.python.coverage.reportPaths=coverage-*.xml -Dsonar.python.xunit.reportPaths=xunit-*.xml -Dsonar.host.url=$SONAR_URL -Dsonar.login=$SONAR_TOKEN -Dsonar.projectKey=$CI_PROJECT_NAME-dev -Dsonar.projectVersion=$(git describe) -Dsonar.exclusions=**/test_*.py,rdiffweb/test.py -Dsonar.qualitygate.wait=True
+
+publish:docker:
+  needs:
+  - package:docker
+  image: docker:20
+  services:
+  - name: docker:20-dind
+  only:
+    variables:
+      - $DOCKER_USR
+      - $DOCKER_PWD
+  script: |
+    set -x
+    docker login $DOCKER_REGISTRY -u $DOCKER_USR -p $DOCKER_PWD
+    docker load --input dist/*.tar
+    # Push commit hash
+    docker tag rdiffweb ikus060/rdiffweb:$CI_COMMIT_SHORT_SHA
+    docker push ikus060/rdiffweb:$CI_COMMIT_SHORT_SHA
+    # Push branch name
+    docker tag rdiffweb ikus060/rdiffweb:$CI_COMMIT_REF_SLUG
+    docker push ikus060/rdiffweb:$CI_COMMIT_REF_SLUG
+    # Push tags
+    if [ -n "$CI_COMMIT_TAG" ]; then
+      docker tag rdiffweb ikus060/rdiffweb:$CI_COMMIT_TAG
+      docker push ikus060/rdiffweb:$CI_COMMIT_TAG
+    fi
+    # Push tag as latest
+    case ${CI_COMMIT_TAG##*.} in
+      [0-9]*)
+        docker tag rdiffweb ikus060/rdiffweb:latest
+        docker push ikus060/rdiffweb:latest      
+        ;;
+    esac
+  stage: publish
+
+publish:docker-readme:
+  needs:
+  - package:docker
+  only:
+    variables:
+      - $DOCKER_USR
+      - $DOCKER_PWD
+      - $CI_COMMIT_TAG
+  image:
+    name: chko/docker-pushrm
+    entrypoint: ["/bin/sh", "-c", "/docker-pushrm"]
+  variables:
+    DOCKER_USER: $DOCKER_USR
+    DOCKER_PASS: $DOCKER_PWD
+    PUSHRM_SHORT: A web interface to rdiff-backup repositories.
+    PUSHRM_TARGET: docker.io/ikus060/rdiffweb
+    PUSHRM_DEBUG: 1
+    PUSHRM_FILE: $CI_PROJECT_DIR/README.md
+  script: "/bin/true"
+  stage: publish
+
+publish:deb:
+  needs:
+  - package:deb
+  only:
+    variables:
+      - $NEXUS_USR
+      - $NEXUS_PWD
+  parallel:
+    matrix:
+    - DIST: [buster, bullseye, bookworm, jammy]
+  script: |
+    set -e
+    set -x
+    if [[ "$CI_COMMIT_TAG" == *.+([0-9]) ]]; then
+      APT_URL="$NEXUS_URL/repository/apt-release-${DIST}/"
+    else
+      APT_URL="$NEXUS_URL/repository/apt-dev-${DIST}/"
+    fi
+    export FILE=$(ls -1 ./dist/$DIST/rdiffweb*.deb)
+    curl --fail -u "$NEXUS_USR:$NEXUS_PWD" -H "Content-Type: multipart/form-data" --data-binary "@$FILE" "$APT_URL"
+  stage: publish
+
+publish:wheel:
+  stage: publish
+  only:
+    variables:
+      - $NEXUS_USR
+      - $NEXUS_PWD
+      - $NEXUS_PYPI_URL
+  script: |
+    set -x
+    # Publish wheel
+    pip3 install wheel twine readme_renderer --upgrade
+    LANG="C.UTF-8" python3 -m readme_renderer README.md -o /tmp/README.html
+    twine upload dist/*.whl -u $NEXUS_USR -p $NEXUS_PWD --repository-url $NEXUS_PYPI_URL
+    if [[ "$CI_COMMIT_TAG" == *.+([0-9]) ]]; then
+      twine upload dist/*.whl -u $PYPI_USR -p $PYPI_PWD
+    fi
+
+publish:doc:
+  stage: publish
+  only:
+    variables:
+      - $NEXUS_USR
+      - $NEXUS_PWD
+      - $NEXUS_URL
+  needs:
+  - doc
+  script:
+    # publish to nexus
+    - export VERSION=$(cd minarca-client; python3 setup.py --version)
+    - export FILE=$(ls -1d $FILENAME)
+    - cd .tox/doc/tmp/html
+    - find * -type f -exec curl --fail -u "$NEXUS_USR:$NEXUS_PWD" --upload-file "{}" $NEXUS_URL/repository/archive/rdiffweb/$VERSION/doc/{} \;
+
+deploy:demo:
+  only:
+    variables:
+    - $GITLAB_ANSIBLE_TOKEN
+  allow_failure: True
+  environment:
+    name: demo
+    url: https://rdiffweb-demo.ikus-soft.com/
+  needs: 
+  - package:deb
+  image: registry.gitlab.com/finestructure/pipeline-trigger
+  script:
+    - apk update && apk add git
+    - export DEB_VERSION=$(ls -1 ./dist/bullseye/rdiffweb_*_all.deb | cut -d '_' -f 2)
+    - echo DEB_VERSION=$DEB_VERSION
+    # Trigger ansible-config pipeline
+    - trigger -a "$ANSIBLE_PIPELINE_GITLAB_API_TOKEN" -t master -e "RDIFFWEB_VERSION=$DEB_VERSION" -p 36bae86778d901fc6b2d6453a41844 18716492
+  stage: deploy
+  variables:
+    GIT_STRATEGY: none
+  
